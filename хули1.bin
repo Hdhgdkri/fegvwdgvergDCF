@@ -1,0 +1,1308 @@
+import asyncio
+import sqlite3
+import uuid
+from datetime import datetime
+
+import aiohttp
+from aiogram import Bot, Dispatcher, F, Router
+from aiogram.filters import Command, CommandStart
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import (
+    Message, CallbackQuery,
+    InlineKeyboardMarkup, InlineKeyboardButton,
+    ReplyKeyboardMarkup, KeyboardButton,
+)
+from aiocryptopay import AioCryptoPay
+
+# ================== НАСТРОЙКИ ==================
+BOT_TOKEN = "9140403567:AAGSwuPfz1vhAoP-3cEdLuNjM4_f_oNUVW8"
+CRYPTOBOT_TOKEN = "676836:AA6fseLDP8ACH8C5Qs9tmlqDvJoIzudOOO4"
+XROCKET_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhcHBJZCI6IjMwOTQ2OSIsImp0aSI6ImFwcDozMDk0Njk6ZGEyNDAzNjgtY2ZkNy00NzQ2LWFhNTQtOThjMmUyYWYzYjdiIiwiaWF0IjoxNzk0NjM2NTcxfQ.VHg9RSJsqX8YOI7_nV1h0l1v5gBjy5CTklTMw62ypGs"
+SUPER_ADMIN_ID = 9089073905
+ADMIN_CONTACT = "@Fetrosil"
+CHANNEL_ID = "@scanxyli"
+CHANNEL_LINK = "https://t.me/scanxyli"
+DB_PATH = "autoscanser.db"
+PRICE_PER_SCAN = 4.75
+MIN_PURCHASE = 5
+SCAN_TIMEOUT_SECONDS = 120
+OWNER_REQUEST_TTL = 600  # 10 минут на ответ
+PARSE = "HTML"
+
+# ================== ЭМОДЗИ ==================
+def e(emoji_id: str, fallback: str) -> str:
+    return f'<tg-emoji emoji-id="{emoji_id}">{fallback}</tg-emoji>'
+
+E_STATS = e("5854798142578368552", "📊")
+E_PROFILE = e("5884366771913233289", "👤")
+E_CART = e("5312361253610475399", "🛒")
+E_MONEY = e("5258204546391351475", "💰")
+E_SUPPORT = e("5400169291586740837", "🛠")
+E_HELLO = e("6041921818896372382", "👋")
+E_PACK = e("5258134813302332906", "📦")
+E_CASH = e("5830459301646311051", "💵")
+E_DOWN = e("5246762912428603768", "📉")
+E_STOP = e("5296728826783482422", "⛔")
+E_OK = e("5774022692642492953", "✅")
+E_CROWN = e("5296631769112525274", "🎩")
+E_WARN = e("5812118545751875218", "⚠️")
+E_LOCK = e("6037249452824072506", "🔒")
+E_Q = e("5934022868802214018", "❓")
+E_USERS = e("6032609071373226027", "👥")
+E_MONEY2 = e("5902206159095339799", "🤑")
+E_FAIL = e("5774077015388852135", "❌")
+E_HOUR = e("5226609538601360787", "⏳")
+E_INFO = e("5258503720928288433", "ℹ️")
+E_ROCKET = e("5798534328698805312", "🚀")
+E_RECEIPT = e("5444856076954520455", "🧾")
+E_OUT = e("5881948563591666817", "💸")
+E_PAUSE = e("5474480235921553625", "⏸")
+E_SEARCH = e("5933594295490581512", "🔍")
+E_CAM = e("5884366771913233289", "📷")
+E_PIN = e("5983099415689171511", "📍")
+E_PARTY = e("5317026657540780588", "🎉")
+E_KEY = e("5859403554404585775", "🔑")
+E_SKULL = e("5188628245154642945", "💀")
+E_GEAR = e("5812216909092887942", "⚙️")
+E_NOTE = e("5778299625370817409", "📝")
+E_PLUS = e("5882207227997066107", "➕")
+E_BELL = e("6021418126061605425", "📢")
+E_MAIL = e("5388894010297303730", "📬")
+E_BAN = e("5812118545751875218", "🚫")
+
+# ================== БД ==================
+db = sqlite3.connect(DB_PATH)
+db.row_factory = sqlite3.Row
+cur = db.cursor()
+
+cur.executescript("""
+CREATE TABLE IF NOT EXISTS users (
+    user_id     INTEGER PRIMARY KEY,
+    username    TEXT,
+    balance     REAL DEFAULT 0,
+    scans       INTEGER DEFAULT 0,
+    has_access  INTEGER DEFAULT 0,
+    is_admin    INTEGER DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS groups (
+    group_id    INTEGER PRIMARY KEY,
+    owner_id    INTEGER,
+    title       TEXT
+);
+CREATE TABLE IF NOT EXISTS scans (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER,
+    group_id    INTEGER,
+    file_id     TEXT,
+    status      TEXT DEFAULT 'pending',
+    admin_msg_id INTEGER,
+    created_at  TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS purchases (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER,
+    product     TEXT,
+    qty         INTEGER,
+    code        TEXT UNIQUE,
+    total       REAL,
+    date        TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    val TEXT
+);
+CREATE TABLE IF NOT EXISTS bans (
+    user_id INTEGER PRIMARY KEY,
+    reason TEXT,
+    banned_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS promos (
+    code TEXT PRIMARY KEY,
+    amount REAL DEFAULT 0,
+    scans INTEGER DEFAULT 0,
+    uses INTEGER DEFAULT 0,
+    max_uses INTEGER DEFAULT 1,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS promo_uses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    code TEXT,
+    user_id INTEGER,
+    used_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(code, user_id)
+);
+CREATE TABLE IF NOT EXISTS owner_requests (
+    group_id    INTEGER PRIMARY KEY,
+    from_user   INTEGER,
+    to_user     INTEGER,
+    created_at  REAL
+);
+""")
+db.commit()
+
+try:
+    cur.execute("ALTER TABLE users ADD COLUMN balance REAL DEFAULT 0")
+    db.commit()
+except sqlite3.OperationalError:
+    pass
+
+cur.execute("INSERT OR IGNORE INTO users (user_id, is_admin, has_access) VALUES (?, 1, 1)", (SUPER_ADMIN_ID,))
+if not cur.execute("SELECT val FROM settings WHERE key='work'").fetchone():
+    cur.execute("INSERT INTO settings (key, val) VALUES ('work', '1')")
+db.commit()
+
+
+def get_user(uid):
+    return cur.execute("SELECT * FROM users WHERE user_id=?", (uid,)).fetchone()
+
+def ensure_user(uid, username=None):
+    if not get_user(uid):
+        cur.execute("INSERT INTO users (user_id, username) VALUES (?, ?)", (uid, username))
+        db.commit()
+
+def is_admin(uid):
+    u = get_user(uid); return bool(u and u["is_admin"])
+
+def has_access(uid):
+    u = get_user(uid); return bool(u and (u["has_access"] or u["is_admin"]))
+
+def get_balance(uid):
+    r = cur.execute("SELECT balance FROM users WHERE user_id=?", (uid,)).fetchone()
+    return r["balance"] if r else 0.0
+
+def change_balance(uid, delta):
+    cur.execute("UPDATE users SET balance = balance + ? WHERE user_id=?", (delta, uid))
+    db.commit()
+
+def get_scans(uid):
+    r = cur.execute("SELECT scans FROM users WHERE user_id=?", (uid,)).fetchone()
+    return r["scans"] if r else 0
+
+def change_scans(uid, delta):
+    cur.execute("UPDATE users SET scans = scans + ? WHERE user_id=?", (delta, uid))
+    db.commit()
+
+def get_group_owner(gid):
+    r = cur.execute("SELECT owner_id FROM groups WHERE group_id=?", (gid,)).fetchone()
+    return r["owner_id"] if r else None
+
+def all_admins():
+    return [r["user_id"] for r in cur.execute("SELECT user_id FROM users WHERE is_admin=1").fetchall()]
+
+def is_work():
+    r = cur.execute("SELECT val FROM settings WHERE key='work'").fetchone()
+    return r["val"] == "1" if r else True
+
+def set_work(state):
+    cur.execute("INSERT OR REPLACE INTO settings (key, val) VALUES ('work', ?)", ("1" if state else "0",))
+    db.commit()
+
+def is_banned(uid):
+    return cur.execute("SELECT 1 FROM bans WHERE user_id=?", (uid,)).fetchone() is not None
+
+def ban_user(uid, reason=""):
+    cur.execute("INSERT OR REPLACE INTO bans (user_id, reason) VALUES (?, ?)", (uid, reason))
+    db.commit()
+
+def unban_user(uid):
+    cur.execute("DELETE FROM bans WHERE user_id=?", (uid,))
+    db.commit()
+
+def get_promo(code):
+    return cur.execute("SELECT * FROM promos WHERE code=?", (code,)).fetchone()
+
+def promo_used_by(code, uid):
+    return cur.execute("SELECT 1 FROM promo_uses WHERE code=? AND user_id=?", (code, uid)).fetchone() is not None
+
+def use_promo(code, uid):
+    p = get_promo(code)
+    if not p:
+        return False, "Промокод не найден, хули."
+    if promo_used_by(code, uid):
+        return False, "Ты уже использовал этот промокод."
+    if p["uses"] >= p["max_uses"]:
+        return False, "Промокод закончился, хули."
+    cur.execute("UPDATE promos SET uses = uses + 1 WHERE code=?", (code,))
+    cur.execute("INSERT INTO promo_uses (code, user_id) VALUES (?, ?)", (code, uid))
+    if p["amount"] > 0:
+        change_balance(uid, p["amount"])
+    if p["scans"] > 0:
+        change_scans(uid, p["scans"])
+    db.commit()
+    parts = []
+    if p["amount"] > 0:
+        parts.append(f"+{p['amount']:.2f} $")
+    if p["scans"] > 0:
+        parts.append(f"+{p['scans']} сканов")
+    return True, ", ".join(parts)
+
+def create_promo(code, amount=0, scans=0, max_uses=1):
+    cur.execute(
+        "INSERT OR REPLACE INTO promos (code, amount, scans, max_uses) VALUES (?, ?, ?, ?)",
+        (code, amount, scans, max_uses),
+    )
+    db.commit()
+
+# ================== СОСТОЯНИЯ ==================
+class TopupState(StatesGroup):
+    waiting_amount = State()
+
+class BuyState(StatesGroup):
+    qty = State()
+
+class PasswordState(StatesGroup):
+    waiting = State()
+
+class PromoState(StatesGroup):
+    waiting = State()
+
+class AdminState(StatesGroup):
+    give_access = State()
+    add_scans = State()
+    broadcast = State()
+    ban = State()
+    unban = State()
+    promo = State()
+
+# ================== КЛАВИАТУРЫ ==================
+def main_menu():
+    return ReplyKeyboardMarkup(keyboard=[
+        [KeyboardButton(text="📊 Статистика"), KeyboardButton(text="👤 Профиль")],
+        [KeyboardButton(text="🛒 Купить сканы"), KeyboardButton(text="💰 Пополнить")],
+        [KeyboardButton(text="🎁 Промокод"), KeyboardButton(text="🛠 Поддержка")],
+    ], resize_keyboard=True)
+
+def admin_menu():
+    state_text = "🟢 Работает" if is_work() else "🔴 Остановлен"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"⚙️ Состояние: {state_text}", callback_data="adm_toggle")],
+        [InlineKeyboardButton(text="📈 Стата", callback_data="adm_stats")],
+        [InlineKeyboardButton(text="📢 Рассылка", callback_data="adm_broadcast")],
+        [InlineKeyboardButton(text="✅ Выдать доступ", callback_data="adm_access")],
+        [InlineKeyboardButton(text="➕ Выдать сканы", callback_data="adm_scans")],
+        [InlineKeyboardButton(text="🚫 Забанить", callback_data="adm_ban")],
+        [InlineKeyboardButton(text="✅ Разбанить", callback_data="adm_unban")],
+        [InlineKeyboardButton(text="🎁 Создать промокод", callback_data="adm_promo")],
+        [InlineKeyboardButton(text="👥 Пользователи", callback_data="adm_users")],
+    ])
+
+def scan_review_kb(scan_id):
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ Успешно", callback_data=f"scan_ok_{scan_id}"),
+        InlineKeyboardButton(text="❌ Неудачно", callback_data=f"scan_fail_{scan_id}"),
+    ]])
+
+def sub_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📢 Подписаться", url=CHANNEL_LINK)],
+        [InlineKeyboardButton(text="✅ Проверить", callback_data="check_sub")],
+    ])
+
+# ================== БОТ ==================
+bot = Bot(BOT_TOKEN)
+dp = Dispatcher(storage=MemoryStorage())
+router = Router()
+dp.include_router(router)
+
+crypto = None
+xr_session = None
+XR_BASE = "https://pay.api.xrocket.exchange"
+
+async def check_sub(uid):
+    try:
+        member = await bot.get_chat_member(CHANNEL_ID, uid)
+        return member.status not in ("left", "kicked")
+    except Exception:
+        return True
+
+async def xr_create_invoice(amount_usd, client_id, description):
+    async with xr_session.post(
+        f"{XR_BASE}/api/v1/invoices",
+        headers={"Authorization": f"Bearer {XROCKET_TOKEN}", "Accept": "application/json"},
+        json={
+            "priceCurrency": "USDT",
+            "priceAmount": f"{amount_usd:.2f}",
+            "clientInvoiceId": client_id,
+            "description": description,
+            "expiresIn": 30 * 60 * 1000,
+        },
+    ) as resp:
+        data = await resp.json(content_type=None)
+        if resp.status >= 400:
+            raise Exception(f"xRocket: {data}")
+        return data
+
+async def xr_get_invoice_status(invoice_id):
+    async with xr_session.get(
+        f"{XR_BASE}/api/v1/invoice",
+        headers={"Authorization": f"Bearer {XROCKET_TOKEN}", "Accept": "application/json"},
+        params={"invoiceId": invoice_id},
+    ) as resp:
+        if resp.status >= 400:
+            return None
+        data = await resp.json(content_type=None)
+        return data.get("status") if isinstance(data, dict) else None
+
+# ---------- /start ----------
+@router.message(CommandStart())
+async def start(msg: Message, state: FSMContext):
+    await state.clear()
+    uid = msg.from_user.id
+    ensure_user(uid, msg.from_user.username)
+
+    if is_banned(uid):
+        reason = cur.execute("SELECT reason FROM bans WHERE user_id=?", (uid,)).fetchone()
+        await msg.answer(
+            f"{E_BAN} Ты забанен, хули.\n\nПричина: {reason['reason'] or 'не указана'}",
+            parse_mode=PARSE,
+        )
+        return
+
+    if msg.chat.type in ("group", "supergroup"):
+        owner_id = get_group_owner(msg.chat.id)
+        if owner_id:
+            await msg.answer(
+                f"{E_OK} Группа активна, всё заебись.\n\n"
+                f"{E_CROWN} Владелец: {owner_id}\n"
+                f"{E_PACK} Остаток сканов: {get_scans(owner_id)}\n\n"
+                f"Кидайте фото, хули стоите.",
+                parse_mode=PARSE,
+            )
+        else:
+            await msg.answer(
+                f"{E_WARN} Группа не активирована, блядь.\n\n"
+                f"Владелец сканов должен написать /add в этой группе.",
+                parse_mode=PARSE,
+            )
+        return
+
+    if not await check_sub(uid):
+        await msg.answer(
+            f"{E_LOCK} Сначала подпишись на канал, потом пользуйся.",
+            reply_markup=sub_kb(),
+            parse_mode=PARSE,
+        )
+        return
+
+    if not has_access(uid):
+        await msg.answer(
+            f"{E_STOP} Хуй тебе, а не доступ.\n\n"
+            f"Бот работает по приглашению.\n"
+            f"Напиши админу: {ADMIN_CONTACT}",
+            parse_mode=PARSE,
+        )
+        return
+
+    await msg.answer(
+        f"{E_HELLO} Здарова, хули надо?\n\n"
+        f"➖➖➖➖➖➖➖➖➖➖\n"
+        f"{E_MONEY} Баланс: {get_balance(uid):.2f} $\n"
+        f"{E_PACK} Сканов: {get_scans(uid)}\n"
+        f"➖➖➖➖➖➖➖➖➖➖\n\n"
+        f"{E_CASH} 1 скан — {PRICE_PER_SCAN:.2f} $\n"
+        f"{E_DOWN} Минимум — {MIN_PURCHASE} сканов\n\n"
+        f"Выбирай, хули.",
+        reply_markup=main_menu(),
+        parse_mode=PARSE,
+    )
+
+@router.callback_query(F.data == "check_sub")
+async def cb_check_sub(cb: CallbackQuery):
+    if await check_sub(cb.from_user.id):
+        await cb.message.edit_text(
+            f"{E_OK} Подписка подтверждена, заебись.\n\nНапиши /start.",
+            parse_mode=PARSE,
+        )
+    else:
+        await cb.answer("Хуй там, ты не подписан.", show_alert=True)
+
+# ---------- /add ----------
+@router.message(Command("add"))
+async def add_group(msg: Message):
+    if msg.chat.type not in ("group", "supergroup"):
+        await msg.answer(f"{E_Q} Хули ты тут делаешь? Команда только для групп.", parse_mode=PARSE)
+        return
+    uid = msg.from_user.id
+    if not has_access(uid):
+        await msg.answer(f"{E_LOCK} Хуй, а не доступ. Напиши: {ADMIN_CONTACT}", parse_mode=PARSE)
+        return
+    if get_scans(uid) <= 0:
+        await msg.answer(f"{E_WARN} Сканов ноль, хули ты хотел?\n\nКупи в ЛС бота.", parse_mode=PARSE)
+        return
+    existing = get_group_owner(msg.chat.id)
+    if existing and existing != uid:
+        await msg.answer(f"{E_WARN} Эта группа уже привязана к другому, иди нахуй.", parse_mode=PARSE)
+        return
+    cur.execute("INSERT OR REPLACE INTO groups (group_id, owner_id, title) VALUES (?, ?, ?)",
+                (msg.chat.id, uid, msg.chat.title))
+    db.commit()
+    await msg.answer(
+        f"{E_OK} Группа подключена, ёпта.\n\n"
+        f"{E_CROWN} Владелец: ты\n"
+        f"{E_PACK} Сканов: {get_scans(uid)}\n\n"
+        f"Участники могут отправлять фото.",
+        parse_mode=PARSE,
+    )
+
+# ---------- /owner ----------
+@router.message(Command("owner"))
+async def change_owner(msg: Message):
+    if msg.chat.type not in ("group", "supergroup"):
+        await msg.answer(f"{E_Q} Только в группах, хули.", parse_mode=PARSE)
+        return
+    if not msg.reply_to_message or not msg.reply_to_message.from_user:
+        await msg.answer(f"{E_WARN} Ответь на сообщение нового владельца командой /owner", parse_mode=PARSE)
+        return
+
+    current_owner = get_group_owner(msg.chat.id)
+    uid = msg.from_user.id
+    new_owner = msg.reply_to_message.from_user.id
+
+    if uid != current_owner and not is_admin(uid):
+        await msg.answer(f"{E_LOCK} Хуй, а не смена владельца.", parse_mode=PARSE)
+        return
+    if new_owner == current_owner:
+        await msg.answer(f"{E_INFO} Он и так владелец, хули.", parse_mode=PARSE)
+        return
+    if not has_access(new_owner):
+        await msg.answer(f"{E_FAIL} У него нет доступа к боту.", parse_mode=PARSE)
+        return
+    if get_scans(new_owner) <= 0:
+        await msg.answer(f"{E_FAIL} У него нет сканов, хули.", parse_mode=PARSE)
+        return
+
+    # Удаляем прошлый запрос, если был
+    cur.execute("DELETE FROM owner_requests WHERE group_id=?", (msg.chat.id,))
+    cur.execute(
+        "INSERT INTO owner_requests (group_id, from_user, to_user, created_at) VALUES (?, ?, ?, ?)",
+        (msg.chat.id, uid, new_owner, datetime.utcnow().timestamp()),
+    )
+    db.commit()
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ Стать владельцем", callback_data=f"owner_accept_{msg.chat.id}"),
+        InlineKeyboardButton(text="❌ Отказаться", callback_data=f"owner_decline_{msg.chat.id}"),
+    ]])
+    try:
+        await bot.send_message(
+            new_owner,
+            f"{E_CROWN} Тебе предлагают стать владельцем группы «{msg.chat.title}».\n\n"
+            f"Сканы будут списываться с твоего баланса при каждом фото в группе.\n\n"
+            f"Принять? (действует 10 минут)",
+            reply_markup=kb,
+            parse_mode=PARSE,
+        )
+        await msg.answer(
+            f"{E_OK} Запрос отправлен пользователю {new_owner}.\n\n"
+            f"Ждём, пока он подтвердит.",
+            parse_mode=PARSE,
+        )
+    except Exception:
+        await msg.answer(
+            f"{E_FAIL} Не удалось отправить запрос. Возможно, он не писал боту в ЛС.",
+            parse_mode=PARSE,
+        )
+
+@router.callback_query(F.data.startswith("owner_accept_"))
+async def owner_accept(cb: CallbackQuery):
+    group_id = int(cb.data.split("_")[2])
+    uid = cb.from_user.id
+
+    req = cur.execute("SELECT * FROM owner_requests WHERE group_id=?", (group_id,)).fetchone()
+    if not req or req["to_user"] != uid:
+        await cb.answer("Этот запрос не для тебя или уже неактуален.", show_alert=True)
+        return
+
+    if datetime.utcnow().timestamp() - req["created_at"] > OWNER_REQUEST_TTL:
+        cur.execute("DELETE FROM owner_requests WHERE group_id=?", (group_id,))
+        db.commit()
+        await cb.message.edit_text(f"{E_HOUR} Запрос истёк, хули.", parse_mode=PARSE)
+        return
+
+    if get_scans(uid) <= 0:
+        await cb.answer("У тебя нет сканов, хули.", show_alert=True)
+        return
+
+    cur.execute("UPDATE groups SET owner_id=? WHERE group_id=?", (uid, group_id))
+    cur.execute("DELETE FROM owner_requests WHERE group_id=?", (group_id,))
+    db.commit()
+
+    await cb.message.edit_text(
+        f"{E_OK} Ты стал владельцем группы, ёпта.\n\n"
+        f"{E_PACK} Сканов у тебя: {get_scans(uid)}\n\n"
+        f"Теперь сканы списываются с твоего баланса.",
+        parse_mode=PARSE,
+    )
+    await cb.answer("Ты владелец.")
+
+    try:
+        await bot.send_message(
+            group_id,
+            f"{E_CROWN} Новый владелец группы: {uid}\n"
+            f"{E_PACK} Сканов у него: {get_scans(uid)}",
+            parse_mode=PARSE,
+        )
+    except Exception:
+        pass
+
+@router.callback_query(F.data.startswith("owner_decline_"))
+async def owner_decline(cb: CallbackQuery):
+    group_id = int(cb.data.split("_")[2])
+    uid = cb.from_user.id
+
+    req = cur.execute("SELECT * FROM owner_requests WHERE group_id=?", (group_id,)).fetchone()
+    if not req or req["to_user"] != uid:
+        await cb.answer("Этот запрос не для тебя или уже неактуален.", show_alert=True)
+        return
+
+    cur.execute("DELETE FROM owner_requests WHERE group_id=?", (group_id,))
+    db.commit()
+
+    await cb.message.edit_text(
+        f"{E_INFO} Ты отказался стать владельцем группы.",
+        parse_mode=PARSE,
+    )
+    await cb.answer("Отказ принят.")
+
+    try:
+        await bot.send_message(
+            group_id,
+            f"{E_INFO} Пользователь {uid} отказался стать владельцем.",
+            parse_mode=PARSE,
+        )
+    except Exception:
+        pass
+
+# ---------- /gstats ----------
+@router.message(Command("gstats"))
+async def group_stats(msg: Message):
+    if msg.chat.type not in ("group", "supergroup"):
+        await msg.answer(f"{E_Q} Только в группах.", parse_mode=PARSE)
+        return
+    owner_id = get_group_owner(msg.chat.id)
+    if not owner_id:
+        await msg.answer(f"{E_WARN} Группа не привязана, хули.", parse_mode=PARSE)
+        return
+    total = cur.execute("SELECT COUNT(*) FROM scans WHERE group_id=?", (msg.chat.id,)).fetchone()[0]
+    success = cur.execute("SELECT COUNT(*) FROM scans WHERE group_id=? AND status='success'", (msg.chat.id,)).fetchone()[0]
+    failed = cur.execute("SELECT COUNT(*) FROM scans WHERE group_id=? AND status='failed'", (msg.chat.id,)).fetchone()[0]
+    pending = cur.execute("SELECT COUNT(*) FROM scans WHERE group_id=? AND status='pending'", (msg.chat.id,)).fetchone()[0]
+    top = cur.execute(
+        "SELECT user_id, COUNT(*) as cnt FROM scans WHERE group_id=? GROUP BY user_id ORDER BY cnt DESC LIMIT 5",
+        (msg.chat.id,),
+    ).fetchall()
+    top_lines = "\n".join(f"  {i+1}. {r['user_id']} — {r['cnt']}" for i, r in enumerate(top)) or "  нет"
+    await msg.answer(
+        f"{E_STATS} Статистика группы\n\n"
+        f"➖➖➖➖➖➖➖➖➖➖\n"
+        f"{E_CROWN} Владелец: {owner_id}\n"
+        f"{E_PACK} Сканов у владельца: {get_scans(owner_id)}\n"
+        f"➖➖➖➖➖➖➖➖➖➖\n"
+        f"📸 Всего сканов: {total}\n"
+        f"{E_OK} Успешных: {success}\n"
+        f"{E_FAIL} Отклонённых: {failed}\n"
+        f"{E_HOUR} В ожидании: {pending}\n"
+        f"➖➖➖➖➖➖➖➖➖➖\n"
+        f"👥 Топ отправителей:\n{top_lines}",
+        parse_mode=PARSE,
+    )
+
+# ---------- Профиль ----------
+@router.message(F.text == "👤 Профиль")
+async def profile(msg: Message):
+    if msg.chat.type != "private":
+        return
+    uid = msg.from_user.id
+    await msg.answer(
+        f"{E_PROFILE} Профиль, блядь\n\n"
+        f"➖➖➖➖➖➖➖➖➖➖\n"
+        f"{E_PROFILE} ID: {uid}\n"
+        f"{E_MONEY} Баланс: {get_balance(uid):.2f} $\n"
+        f"{E_PACK} Сканов: {get_scans(uid)}\n"
+        f"➖➖➖➖➖➖➖➖➖➖\n\n"
+        f"Пополнить — «💰 Пополнить», хули.",
+        parse_mode=PARSE,
+    )
+
+# ---------- Статистика ----------
+@router.message(F.text == "📊 Статистика")
+async def stats(msg: Message):
+    if msg.chat.type != "private" or not has_access(msg.from_user.id):
+        return
+    uid = msg.from_user.id
+    groups_count = cur.execute("SELECT COUNT(*) FROM groups WHERE owner_id=?", (uid,)).fetchone()[0]
+    done = cur.execute("SELECT COUNT(*) FROM scans WHERE user_id=? AND status='success'", (uid,)).fetchone()[0]
+    await msg.answer(
+        f"{E_STATS} Статистика, ёбана\n\n"
+        f"➖➖➖➖➖➖➖➖➖➖\n"
+        f"{E_MONEY} Баланс: {get_balance(uid):.2f} $\n"
+        f"{E_PACK} Сканов: {get_scans(uid)}\n"
+        f"{E_OK} Успешных: {done}\n"
+        f"{E_USERS} Групп: {groups_count}\n"
+        f"➖➖➖➖➖➖➖➖➖➖",
+        parse_mode=PARSE,
+    )
+
+# ---------- Поддержка ----------
+@router.message(F.text == "🛠 Поддержка")
+async def support(msg: Message):
+    if msg.chat.type == "private":
+        await msg.answer(
+            f"{E_SUPPORT} Поддержка, блядь\n\n"
+            f"Хули случилось? Пиши: {ADMIN_CONTACT}\n"
+            f"Отвечаем в течение дня.",
+            parse_mode=PARSE,
+        )
+
+# ---------- Промокод ----------
+@router.message(F.text == "🎁 Промокод")
+async def promo_enter(msg: Message, state: FSMContext):
+    if msg.chat.type != "private" or not has_access(msg.from_user.id):
+        return
+    await state.set_state(PromoState.waiting)
+    await msg.answer(f"{E_PARTY} Промокод, ёпта\n\nВведи код:", parse_mode=PARSE)
+
+@router.message(PromoState.waiting)
+async def promo_apply(msg: Message, state: FSMContext):
+    code = msg.text.strip().upper()
+    ok, text = use_promo(code, msg.from_user.id)
+    await state.clear()
+    if ok:
+        await msg.answer(f"{E_OK} Промокод активирован, заебись!\n\n{E_PARTY} {text}", parse_mode=PARSE)
+    else:
+        await msg.answer(f"{E_FAIL} {text}", parse_mode=PARSE)
+
+# ---------- Пополнение ----------
+@router.message(F.text == "💰 Пополнить")
+async def topup(msg: Message, state: FSMContext):
+    if msg.chat.type != "private" or not has_access(msg.from_user.id):
+        return
+    await state.set_state(TopupState.waiting_amount)
+    await msg.answer(
+        f"{E_MONEY2} Пополнение, хули\n\n"
+        f"➖➖➖➖➖➖➖➖➖➖\n"
+        f"{E_MONEY} Текущий баланс: {get_balance(msg.from_user.id):.2f} $\n"
+        f"➖➖➖➖➖➖➖➖➖➖\n\n"
+        f"Введи сумму в долларах (минимум 1.00 $), не тупи:",
+        parse_mode=PARSE,
+    )
+
+@router.message(TopupState.waiting_amount)
+async def topup_amount(msg: Message, state: FSMContext):
+    if msg.chat.type != "private":
+        return
+    try:
+        amount = float(msg.text.replace(",", "."))
+        if amount < 1:
+            await msg.answer(f"{E_FAIL} Хуйня какая-то. Минимум — 1.00 $.", parse_mode=PARSE)
+            return
+    except ValueError:
+        await msg.answer(f"{E_FAIL} Ты дебил? Введи число, например: 10 или 25.50", parse_mode=PARSE)
+        return
+    await state.clear()
+    await msg.answer(
+        f"{E_MONEY2} Пополнение на {amount:.2f} $\n\nВыбери, хули:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🪙 CryptoBot", callback_data=f"topup_crypto_{amount}")],
+            [InlineKeyboardButton(text="🚀 xRocket", callback_data=f"topup_xrocket_{amount}")],
+        ]),
+        parse_mode=PARSE,
+    )
+
+@router.callback_query(F.data.startswith("topup_crypto_"))
+async def cb_topup_crypto(cb: CallbackQuery):
+    amount = float(cb.data.split("_")[2])
+    try:
+        invoice = await crypto.create_invoice(asset="USDT", amount=amount)
+        await cb.message.edit_text(
+            f"{E_MONEY2} CryptoBot, блядь\n\n"
+            f"➖➖➖➖➖➖➖➖➖➖\n"
+            f"{E_CASH} Сумма: {amount:.2f} USDT\n"
+            f"➖➖➖➖➖➖➖➖➖➖\n\n"
+            f"Оплати и нажми «Проверить», не забудь.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🪙 Оплатить", url=invoice.bot_invoice_url)],
+                [InlineKeyboardButton(text="🔄 Проверить", callback_data=f"check_crypto_{invoice.invoice_id}_{amount}")],
+            ]),
+            parse_mode=PARSE,
+        )
+    except Exception as ex:
+        await cb.message.edit_text(f"{E_FAIL} {ex}", parse_mode=PARSE)
+
+@router.callback_query(F.data.startswith("check_crypto_"))
+async def cb_check_crypto(cb: CallbackQuery):
+    parts = cb.data.split("_")
+    inv_id = int(parts[2])
+    amount = float(parts[3])
+    try:
+        inv = await crypto.get_invoices(invoice_ids=inv_id)
+        invoice = inv[0] if isinstance(inv, list) else inv
+        if invoice.status == "paid":
+            exists = cur.execute("SELECT 1 FROM purchases WHERE code=?", (f"crypto_{inv_id}",)).fetchone()
+            if exists:
+                await cb.answer("Этот счёт уже зачислен, хули ты жмёшь.", show_alert=True)
+                return
+            change_balance(cb.from_user.id, amount)
+            cur.execute("INSERT INTO purchases (user_id, product, qty, code, total) VALUES (?,?,?,?,?)",
+                        (cb.from_user.id, "Пополнение CryptoBot", 1, f"crypto_{inv_id}", amount))
+            db.commit()
+            await cb.message.edit_text(
+                f"{E_OK} Баланс пополнен, заебись\n\n"
+                f"{E_MONEY} Зачислено: {amount:.2f} $\n"
+                f"{E_MONEY} Новый баланс: {get_balance(cb.from_user.id):.2f} $",
+                parse_mode=PARSE,
+            )
+        else:
+            await cb.answer("Хуй там, оплата не поступила. Оплати и нажми «Проверить» снова.", show_alert=True)
+    except Exception as ex:
+        await cb.answer(f"Ошибка: {ex}", show_alert=True)
+
+@router.callback_query(F.data.startswith("topup_xrocket_"))
+async def cb_topup_xrocket(cb: CallbackQuery):
+    amount = float(cb.data.split("_")[2])
+    try:
+        client_id = f"dep_{uuid.uuid4().hex}"
+        data = await xr_create_invoice(amount, client_id, f"Пополнение {cb.from_user.id}")
+        inv_id = str(data["id"])
+        pay_url = (data.get("links") or {}).get("telegramBotLink") or f"https://t.me/xRocket?start={inv_id}"
+        await cb.message.edit_text(
+            f"{E_ROCKET} Xrocket, ёпта\n\n"
+            f"➖➖➖➖➖➖➖➖➖➖\n"
+            f"{E_CASH} Сумма: {amount:.2f} USDT\n"
+            f"➖➖➖➖➖➖➖➖➖➖\n\n"
+            f"Оплати и нажми «Проверить».",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🪙 Оплатить", url=pay_url)],
+                [InlineKeyboardButton(text="🔄 Проверить", callback_data=f"check_xrocket_{inv_id}_{amount}")],
+            ]),
+            parse_mode=PARSE,
+        )
+    except Exception as ex:
+        await cb.message.edit_text(f"{E_FAIL} {ex}", parse_mode=PARSE)
+
+@router.callback_query(F.data.startswith("check_xrocket_"))
+async def cb_check_xrocket(cb: CallbackQuery):
+    parts = cb.data.split("_")
+    inv_id = parts[2]
+    amount = float(parts[3])
+    try:
+        status = await xr_get_invoice_status(inv_id)
+        if status == "paid":
+            exists = cur.execute("SELECT 1 FROM purchases WHERE code=?", (f"xrocket_{inv_id}",)).fetchone()
+            if exists:
+                await cb.answer("Этот счёт уже зачислен, хули ты жмёшь.", show_alert=True)
+                return
+            change_balance(cb.from_user.id, amount)
+            cur.execute("INSERT INTO purchases (user_id, product, qty, code, total) VALUES (?,?,?,?,?)",
+                        (cb.from_user.id, "Пополнение xRocket", 1, f"xrocket_{inv_id}", amount))
+            db.commit()
+            await cb.message.edit_text(
+                f"{E_OK} Баланс пополнен, заебись\n\n"
+                f"{E_MONEY} Зачислено: {amount:.2f} $\n"
+                f"{E_MONEY} Новый баланс: {get_balance(cb.from_user.id):.2f} $",
+                parse_mode=PARSE,
+            )
+        elif status in ("expired", "cancelled"):
+            await cb.answer("Счёт сдох, создай новый.", show_alert=True)
+        elif status == "partially_paid":
+            await cb.answer("Оплатил не до конца, хули. Пиши в поддержку.", show_alert=True)
+        else:
+            await cb.answer("Оплата не поступила, хули. Попробуй через минуту.", show_alert=True)
+    except Exception as ex:
+        await cb.answer(f"Ошибка проверки: {ex}", show_alert=True)
+
+# ---------- Покупка ----------
+@router.message(F.text == "🛒 Купить сканы")
+async def buy_scans(msg: Message, state: FSMContext):
+    if msg.chat.type != "private" or not has_access(msg.from_user.id):
+        return
+    await state.set_state(BuyState.qty)
+    await msg.answer(
+        f"{E_CART} Покупка сканов, блядь\n\n"
+        f"➖➖➖➖➖➖➖➖➖➖\n"
+        f"{E_CASH} Цена: {PRICE_PER_SCAN:.2f} $ за скан\n"
+        f"{E_DOWN} Минимум: {MIN_PURCHASE} сканов\n"
+        f"{E_MONEY} Баланс: {get_balance(msg.from_user.id):.2f} $\n"
+        f"➖➖➖➖➖➖➖➖➖➖\n\n"
+        f"Введи количество, не тупи:",
+        parse_mode=PARSE,
+    )
+
+@router.message(BuyState.qty)
+async def buy_qty(msg: Message, state: FSMContext):
+    try:
+        qty = int(msg.text)
+        if qty < MIN_PURCHASE:
+            await msg.answer(f"{E_FAIL} Хуйня. Минимум — {MIN_PURCHASE} сканов.", parse_mode=PARSE)
+            return
+    except ValueError:
+        await msg.answer(f"{E_FAIL} Ты дебил? Введи целое число.", parse_mode=PARSE)
+        return
+    total = qty * PRICE_PER_SCAN
+    balance = get_balance(msg.from_user.id)
+    if balance < total:
+        await msg.answer(
+            f"{E_FAIL} Денег нет, хули\n\n"
+            f"➖➖➖➖➖➖➖➖➖➖\n"
+            f"{E_RECEIPT} Нужно: {total:.2f} $\n"
+            f"{E_MONEY} У тебя: {balance:.2f} $\n"
+            f"➖➖➖➖➖➖➖➖➖➖\n\n"
+            f"Пополни: «💰 Пополнить».",
+            parse_mode=PARSE,
+        )
+        return
+    change_balance(msg.from_user.id, -total)
+    change_scans(msg.from_user.id, qty)
+    cur.execute("INSERT INTO purchases (user_id, product, qty, code, total) VALUES (?,?,?,?,?)",
+                (msg.from_user.id, "Сканы", qty, f"buy_{uuid.uuid4().hex}", total))
+    db.commit()
+    await state.clear()
+    await msg.answer(
+        f"{E_OK} Покупка успешна, ёбана\n\n"
+        f"➖➖➖➖➖➖➖➖➖➖\n"
+        f"{E_PACK} Куплено: {qty} сканов\n"
+        f"{E_OUT} Списано: {total:.2f} $\n"
+        f"{E_MONEY} Баланс: {get_balance(msg.from_user.id):.2f} $\n"
+        f"➖➖➖➖➖➖➖➖➖➖\n\n"
+        f"Добавь бота в группу и напиши /add, хули.",
+        reply_markup=main_menu(),
+        parse_mode=PARSE,
+    )
+
+# ---------- Фото ----------
+@router.message(F.photo)
+async def on_photo(msg: Message):
+    uid = msg.from_user.id
+    if is_banned(uid):
+        await msg.answer(f"{E_BAN} Ты забанен, хули.", parse_mode=PARSE)
+        return
+    if not is_work():
+        await msg.answer(f"{E_PAUSE} Бот на паузе, блядь\n\nВ пуле нет сессий. Попробуй позже.", parse_mode=PARSE)
+        return
+    if msg.chat.type in ("group", "supergroup"):
+        owner_id = get_group_owner(msg.chat.id)
+        if not owner_id:
+            await msg.answer(f"{E_WARN} Группа не активирована, хули.\n\nВладелец должен написать /add.", parse_mode=PARSE)
+            return
+        gid = msg.chat.id
+    else:
+        if not has_access(uid):
+            return
+        owner_id, gid = uid, None
+    if get_scans(owner_id) <= 0:
+        await msg.answer(f"{E_WARN} Сканы закончились, хули.\n\nПополни: «💰 Пополнить» в ЛС бота.", parse_mode=PARSE)
+        return
+    file_id = msg.photo[-1].file_id
+    await msg.answer(f"{E_SEARCH} Проверяю фото, подожди...", parse_mode=PARSE)
+    change_scans(owner_id, -1)
+    cur.execute("INSERT INTO scans (user_id, group_id, file_id, status) VALUES (?, ?, ?, 'pending')",
+                (owner_id, gid, file_id))
+    db.commit()
+    scan_id = cur.lastrowid
+    place = msg.chat.title if gid else "ЛС"
+    caption = (
+        f"{E_CAM} Новый скан #{scan_id}, блядь\n\n"
+        f"➖➖➖➖➖➖➖➖➖➖\n"
+        f"{E_PROFILE} От: {uid} (@{msg.from_user.username})\n"
+        f"{E_CROWN} Владелец: {owner_id}\n"
+        f"{E_PIN} Место: {place}\n"
+        f"➖➖➖➖➖➖➖➖➖➖\n\n"
+        f"Проверь QR, хули."
+    )
+    for admin_id in all_admins():
+        try:
+            sent = await bot.send_photo(admin_id, file_id, caption=caption, reply_markup=scan_review_kb(scan_id), parse_mode=PARSE)
+            cur.execute("UPDATE scans SET admin_msg_id=? WHERE id=?", (sent.message_id, scan_id))
+            db.commit()
+        except Exception:
+            pass
+
+# ---------- Кнопки админа по скану ----------
+@router.callback_query(F.data.startswith("scan_ok_"))
+async def scan_ok(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return
+    scan_id = int(cb.data.split("_")[2])
+    scan = cur.execute("SELECT * FROM scans WHERE id=?", (scan_id,)).fetchone()
+    if not scan or scan["status"] != "pending":
+        await cb.answer("Скан уже обработан, хули ты жмёшь.", show_alert=True)
+        return
+    await state.update_data(scan_id=scan_id)
+    await state.set_state(PasswordState.waiting)
+    await cb.message.answer(
+        f"{E_OK} Скан #{scan_id}, ёпта\n\nВведи пароль 2FA.\nЕсли 2FA нет — отправь `-`.",
+        parse_mode=PARSE,
+    )
+    await cb.answer()
+
+@router.message(PasswordState.waiting)
+async def process_password(msg: Message, state: FSMContext):
+    if not is_admin(msg.from_user.id):
+        return
+    data = await state.get_data()
+    scan_id = data["scan_id"]
+    password = msg.text.strip()
+    scan = cur.execute("SELECT * FROM scans WHERE id=?", (scan_id,)).fetchone()
+    if not scan or scan["status"] != "pending":
+        await state.clear()
+        await msg.answer(f"{E_INFO} Скан уже обработан, хули ты жмёшь.", parse_mode=PARSE)
+        return
+    cur.execute("UPDATE scans SET status='success' WHERE id=?", (scan_id,))
+    db.commit()
+    if password == "-":
+        text = f"{E_PARTY} ПИЗДАТО СЕССИЯ ВСТАЛА, ХУЛИ!\n\n2FA нет."
+    else:
+        text = f"{E_PARTY} ПИЗДАТО СЕССИЯ ВСТАЛА, ХУЛИ!\n\n{E_KEY} Пароль: {password}"
+    try:
+        await bot.send_message(scan["user_id"], text, parse_mode=PARSE)
+    except Exception:
+        pass
+    await state.clear()
+    await msg.answer(f"{E_OK} Скан #{scan_id} подтверждён, заебись\n\nПароль: {password}", parse_mode=PARSE)
+
+@router.callback_query(F.data.startswith("scan_fail_"))
+async def scan_fail(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return
+    scan_id = int(cb.data.split("_")[2])
+    scan = cur.execute("SELECT * FROM scans WHERE id=?", (scan_id,)).fetchone()
+    if not scan or scan["status"] != "pending":
+        await cb.answer("Скан уже обработан, хули ты жмёшь.", show_alert=True)
+        return
+    change_scans(scan["user_id"], +1)
+    cur.execute("UPDATE scans SET status='failed' WHERE id=?", (scan_id,))
+    db.commit()
+    try:
+        await bot.send_message(
+            scan["user_id"],
+            f"{E_SKULL} ЕБАТЬ ТЫ ЛОХ, СЕССИЯ СДОХЛА\n\n{E_PACK} Скан возвращён на баланс.",
+            parse_mode=PARSE,
+        )
+    except Exception:
+        pass
+    await cb.message.edit_caption(
+        caption=(cb.message.caption or "") + f"\n\n{E_FAIL} Скан #{scan_id} отклонён, хули",
+        parse_mode=PARSE,
+    )
+    await cb.answer("Скан возвращён на баланс владельца.")
+
+# ---------- Таймаут скана ----------
+async def scan_timeout_watcher():
+    while True:
+        try:
+            rows = cur.execute("SELECT * FROM scans WHERE status='pending'").fetchall()
+            for r in rows:
+                try:
+                    created = datetime.strptime(r["created_at"], "%Y-%m-%d %H:%M:%S")
+                    elapsed = (datetime.utcnow() - created).total_seconds()
+                except Exception:
+                    continue
+                if elapsed < SCAN_TIMEOUT_SECONDS:
+                    continue
+                cur.execute("UPDATE scans SET status='failed' WHERE id=? AND status='pending'", (r["id"],))
+                db.commit()
+                change_scans(r["user_id"], +1)
+                try:
+                    await bot.send_message(
+                        r["user_id"],
+                        f"{E_SKULL} ЕБАТЬ ТЫ ЛОХ, СЕССИЯ СДОХЛА\n\n"
+                        f"{E_FAIL} Неуспешно, скан отклонён системой (таймаут 2 мин).\n"
+                        f"{E_PACK} Скан возвращён на баланс.",
+                        parse_mode=PARSE,
+                    )
+                except Exception:
+                    pass
+                for admin_id in all_admins():
+                    try:
+                        await bot.send_message(
+                            admin_id,
+                            f"{E_HOUR} Скан #{r['id']} отклонён системой (таймаут 2 мин).\n"
+                            f"{E_PROFILE} Владелец: {r['user_id']}",
+                            parse_mode=PARSE,
+                        )
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        await asyncio.sleep(30)
+
+# ---------- Таймаут запроса владельца ----------
+async def owner_request_watcher():
+    while True:
+        try:
+            now = datetime.utcnow().timestamp()
+            rows = cur.execute("SELECT * FROM owner_requests").fetchall()
+            for r in rows:
+                if now - r["created_at"] > OWNER_REQUEST_TTL:
+                    cur.execute("DELETE FROM owner_requests WHERE group_id=?", (r["group_id"],))
+                    db.commit()
+                    try:
+                        await bot.send_message(
+                            r["to_user"],
+                            f"{E_HOUR} Запрос на владение группой истёк.",
+                            parse_mode=PARSE,
+                        )
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        await asyncio.sleep(60)
+
+# ---------- Админка ----------
+@router.message(Command("admin"))
+async def admin(msg: Message):
+    if is_admin(msg.from_user.id):
+        state_text = "🟢 Работает" if is_work() else "🔴 Остановлен"
+        await msg.answer(
+            f"{E_GEAR} Админ-панель, блядь\n\n"
+            f"➖➖➖➖➖➖➖➖➖➖\n"
+            f"{E_GEAR} Состояние: {state_text}\n"
+            f"➖➖➖➖➖➖➖➖➖➖",
+            reply_markup=admin_menu(),
+            parse_mode=PARSE,
+        )
+
+@router.message(Command("astats"))
+async def admin_stats(msg: Message):
+    if not is_admin(msg.from_user.id):
+        return
+    users_total = cur.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+    users_access = cur.execute("SELECT COUNT(*) FROM users WHERE has_access=1").fetchone()[0]
+    users_banned = cur.execute("SELECT COUNT(*) FROM bans").fetchone()[0]
+    groups_total = cur.execute("SELECT COUNT(*) FROM groups").fetchone()[0]
+    scans_total = cur.execute("SELECT COUNT(*) FROM scans").fetchone()[0]
+    scans_success = cur.execute("SELECT COUNT(*) FROM scans WHERE status='success'").fetchone()[0]
+    scans_failed = cur.execute("SELECT COUNT(*) FROM scans WHERE status='failed'").fetchone()[0]
+    scans_pending = cur.execute("SELECT COUNT(*) FROM scans WHERE status='pending'").fetchone()[0]
+    deposits = cur.execute("SELECT COALESCE(SUM(total),0) FROM purchases WHERE product LIKE 'Пополнение%'").fetchone()[0]
+    purchases = cur.execute("SELECT COALESCE(SUM(total),0) FROM purchases WHERE product='Сканы'").fetchone()[0]
+    await msg.answer(
+        f"{E_GEAR} Стата админа\n\n"
+        f"➖➖➖➖➖➖➖➖➖➖\n"
+        f"👥 Пользователи\n"
+        f"  Всего: {users_total}\n"
+        f"  С доступом: {users_access}\n"
+        f"  Забанено: {users_banned}\n"
+        f"➖➖➖➖➖➖➖➖➖➖\n"
+        f"👥 Группы: {groups_total}\n"
+        f"➖➖➖➖➖➖➖➖➖➖\n"
+        f"📸 Сканы\n"
+        f"  Всего: {scans_total}\n"
+        f"  {E_OK} Успешных: {scans_success}\n"
+        f"  {E_FAIL} Отклонённых: {scans_failed}\n"
+        f"  {E_HOUR} В ожидании: {scans_pending}\n"
+        f"➖➖➖➖➖➖➖➖➖➖\n"
+        f"{E_MONEY} Пополнений: {deposits:.2f} $\n"
+        f"{E_CART} Покупок сканов: {purchases:.2f} $",
+        parse_mode=PARSE,
+    )
+
+@router.callback_query(F.data == "adm_stats")
+async def cb_admin_stats(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return
+    await admin_stats(cb.message)
+
+@router.callback_query(F.data == "adm_toggle")
+async def adm_toggle(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return
+    new_state = not is_work()
+    set_work(new_state)
+    await cb.message.edit_reply_markup(reply_markup=admin_menu())
+    if new_state:
+        await cb.answer("🟢 Бот работает, ёпта. Принимает фото.", show_alert=True)
+    else:
+        await cb.answer("🔴 Бот остановлен, хули. Фото не принимаются.", show_alert=True)
+
+@router.callback_query(F.data == "adm_access")
+async def adm_access(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return
+    await state.set_state(AdminState.give_access)
+    await cb.message.answer(f"{E_OK} Выдать доступ, блядь\n\n{E_NOTE} Отправь ID пользователя:", parse_mode=PARSE)
+
+@router.message(AdminState.give_access)
+async def do_access(msg: Message, state: FSMContext):
+    if not is_admin(msg.from_user.id):
+        return
+    try:
+        uid = int(msg.text)
+    except ValueError:
+        await msg.answer(f"{E_FAIL} ID должен быть числом, дебил.", parse_mode=PARSE)
+        return
+    ensure_user(uid)
+    cur.execute("UPDATE users SET has_access=1 WHERE user_id=?", (uid,))
+    db.commit()
+    await state.clear()
+    await msg.answer(f"{E_OK} Доступ выдан, заебись\n\n{E_PROFILE} ID: {uid}", parse_mode=PARSE)
+
+@router.callback_query(F.data == "adm_scans")
+async def adm_scans(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return
+    await state.set_state(AdminState.add_scans)
+    await cb.message.answer(f"{E_PLUS} Выдать сканы, хули\n\nФормат: ID количество\nПример: 123456789 50", parse_mode=PARSE)
+
+@router.message(AdminState.add_scans)
+async def do_scans(msg: Message, state: FSMContext):
+    if not is_admin(msg.from_user.id):
+        return
+    try:
+        uid, qty = msg.text.split()
+        uid, qty = int(uid), int(qty)
+    except Exception:
+        await msg.answer(f"{E_FAIL} Формат: ID количество, не тупи.", parse_mode=PARSE)
+        return
+    ensure_user(uid)
+    change_scans(uid, qty)
+    await state.clear()
+    await msg.answer(
+        f"{E_OK} Сканы начислены, ёбана\n\n{E_PROFILE} ID: {uid}\n{E_PLUS} Добавлено: {qty}\n{E_PACK} Всего: {get_scans(uid)}",
+        parse_mode=PARSE,
+    )
+
+@router.callback_query(F.data == "adm_ban")
+async def adm_ban(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return
+    await state.set_state(AdminState.ban)
+    await cb.message.answer(f"{E_BAN} Забанить, хули\n\nФормат: ID причина\nПример: 123456789 спам", parse_mode=PARSE)
+
+@router.message(AdminState.ban)
+async def do_ban(msg: Message, state: FSMContext):
+    if not is_admin(msg.from_user.id):
+        return
+    parts = msg.text.split(maxsplit=1)
+    try:
+        uid = int(parts[0])
+        reason = parts[1] if len(parts) > 1 else "не указана"
+    except (ValueError, IndexError):
+        await msg.answer(f"{E_FAIL} Формат: ID причина", parse_mode=PARSE)
+        return
+    ban_user(uid, reason)
+    await state.clear()
+    await msg.answer(f"{E_OK} {uid} забанен, хули\nПричина: {reason}", parse_mode=PARSE)
+
+@router.callback_query(F.data == "adm_unban")
+async def adm_unban(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return
+    await state.set_state(AdminState.unban)
+    await cb.message.answer(f"{E_OK} Разбанить\n\nОтправь ID:", parse_mode=PARSE)
+
+@router.message(AdminState.unban)
+async def do_unban(msg: Message, state: FSMContext):
+    if not is_admin(msg.from_user.id):
+        return
+    try:
+        uid = int(msg.text)
+    except ValueError:
+        await msg.answer(f"{E_FAIL} ID — число.", parse_mode=PARSE)
+        return
+    unban_user(uid)
+    await state.clear()
+    await msg.answer(f"{E_OK} {uid} разбанен, заебись.", parse_mode=PARSE)
+
+@router.callback_query(F.data == "adm_promo")
+async def adm_promo(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return
+    await state.set_state(AdminState.promo)
+    await cb.message.answer(
+        f"{E_PARTY} Создать промокод\n\n"
+        f"Формат: КОД СУММА СКАНЫ МАКС_ИСПОЛЬЗОВАНИЙ\n"
+        f"Пример: WELCOME 5 10 100",
+        parse_mode=PARSE,
+    )
+
+@router.message(AdminState.promo)
+async def do_promo(msg: Message, state: FSMContext):
+    if not is_admin(msg.from_user.id):
+        return
+    parts = msg.text.split()
+    if len(parts) != 4:
+        await msg.answer(f"{E_FAIL} Формат: КОД СУММА СКАНЫ МАКС", parse_mode=PARSE)
+        return
+    code = parts[0].upper()
+    try:
+        amount = float(parts[1])
+        scans = int(parts[2])
+        max_uses = int(parts[3])
+    except ValueError:
+        await msg.answer(f"{E_FAIL} Числа введи, дебил.", parse_mode=PARSE)
+        return
+    create_promo(code, amount, scans, max_uses)
+    await state.clear()
+    await msg.answer(
+        f"{E_OK} Промокод создан, заебись\n\n"
+        f"🎁 Код: {code}\n"
+        f"💰 Сумма: {amount} $\n"
+        f"📦 Сканы: {scans}\n"
+        f"🔢 Макс. использований: {max_uses}",
+        parse_mode=PARSE,
+    )
+
+@router.callback_query(F.data == "adm_broadcast")
+async def adm_broadcast(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return
+    await state.set_state(AdminState.broadcast)
+    await cb.message.answer(f"{E_BELL} Рассылка, блядь\n\n{E_NOTE} Отправь текст сообщения:", parse_mode=PARSE)
+
+@router.message(AdminState.broadcast)
+async def do_broadcast(msg: Message, state: FSMContext):
+    if not is_admin(msg.from_user.id):
+        return
+    await state.clear()
+    users = cur.execute("SELECT user_id FROM users WHERE has_access=1").fetchall()
+    ok = fail = 0
+    for u in users:
+        try:
+            await bot.send_message(u["user_id"], msg.text)
+            ok += 1
+        except Exception:
+            fail += 1
+    await msg.answer(
+        f"{E_OK} Рассылка завершена, хули\n\n"
+        f"➖➖➖➖➖➖➖➖➖➖\n"
+        f"{E_MAIL} Доставлено: {ok}\n"
+        f"{E_FAIL} Ошибок: {fail}\n"
+        f"➖➖➖➖➖➖➖➖➖➖",
+        parse_mode=PARSE,
+    )
+
+@router.callback_query(F.data == "adm_users")
+async def adm_users(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return
+    total = cur.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+    wa = cur.execute("SELECT COUNT(*) FROM users WHERE has_access=1").fetchone()[0]
+    await cb.message.answer(
+        f"{E_USERS} Пользователи, ёпта\n\n"
+        f"➖➖➖➖➖➖➖➖➖➖\n"
+        f"{E_PROFILE} Всего: {total}\n"
+        f"{E_OK} С доступом: {wa}\n"
+        f"➖➖➖➖➖➖➖➖➖➖",
+        parse_mode=PARSE,
+    )
+
+# ================== ЗАПУСК ==================
+async def main():
+    global crypto, xr_session
+    crypto = AioCryptoPay(token=CRYPTOBOT_TOKEN)
+    xr_session = aiohttp.ClientSession()
+    await bot.delete_webhook(drop_pending_updates=True)
+    asyncio.create_task(scan_timeout_watcher())
+    asyncio.create_task(owner_request_watcher())
+    print("Бот запущен")
+    try:
+        await dp.start_polling(bot)
+    finally:
+        await xr_session.close()
+        await crypto.close()
+
+if __name__ == "__main__":
+    asyncio.run(main())
